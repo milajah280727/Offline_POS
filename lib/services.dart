@@ -41,8 +41,8 @@ class PasswordHasher {
   }
 
   static String hash(String password, String saltB64) {
-    final dk = _pbkdf2(password, saltB64, iterations, 32);
-    return 'pbkdf2\$$iterations\$$saltB64\${base64Encode(dk)}';
+    final Uint8List dk = _pbkdf2(password, saltB64, iterations, 32);
+    return 'pbkdf2\$$iterations\$$saltB64\$${base64Encode(dk)}';
   }
 
   /// Perbandingan konstan-waktu terhadap nilai tersimpan.
@@ -606,7 +606,7 @@ class DB {
   static Future<void> insertDetail(Map<String, dynamic> data) async => await _db!.insert('detail_transaksi', data);
 
   /// Nomor transaksi unik & berurutan: TRX-YYYYMMDD-0001 (dibuat di dalam txn).
-  static Future<String> _nextNoTrx(Txn txn, DateTime now) async {
+  static Future<String> _nextNoTrx(Transaction txn, DateTime now) async {
     final day = DateFormat('yyyyMMdd').format(now);
     final rows = await txn.rawQuery(
         "SELECT COUNT(*) AS n FROM transaksi WHERE no_transaksi LIKE ?", ['TRX-$day-%']);
@@ -680,7 +680,7 @@ class DB {
         }
         await txn.insert('log', {
           'id_user': userId,
-          'aktivitas': 'Transaksi $no sebesar ${total}',
+          'aktivitas': 'Transaksi $no sebesar $total',
           'waktu': now.toIso8601String(),
         });
         header = {
@@ -1071,7 +1071,7 @@ class DB {
         }, where: 'id_shift = ?', whereArgs: [sh['id_shift']]);
         await txn.insert('log', {
           'id_user': userId,
-          'aktivitas': 'Tutup shift — seharusnya ${seharusnya}, hitung $saldoHitung, selisih $selisih',
+          'aktivitas': 'Tutup shift — seharusnya $seharusnya, hitung $saldoHitung, selisih $selisih',
           'waktu': DateTime.now().toIso8601String(),
         });
       });
