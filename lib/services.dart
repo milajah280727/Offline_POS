@@ -160,6 +160,25 @@ class DB {
   /// Persentase pajak toko (default 0).
   static Future<int> taxPercent() async => int.tryParse(await getSetting('tax_percent') ?? '0') ?? 0;
 
+  /// Ambang stok menipis per produk (default 10) — dipakai indikator dashboard.
+  static Future<int> lowStockThreshold() async => int.tryParse(await getSetting('low_stock') ?? '10') ?? 10;
+
+  /// Nama perangkat kasir ini (muncul di struk & laporan).
+  static Future<String> deviceName() async => await getSetting('device_name') ?? 'Kasir 1';
+
+  /// Simpan pengaturan dengan validasi numerik opsional. Return pesan error / null.
+  static Future<String?> setSettingValidated(String key, String value, {int? min, int? max}) async {
+    if (min != null || max != null) {
+      final n = int.tryParse(value.trim());
+      if (n == null) return 'Nilai harus angka';
+      if (min != null && n < min) return 'Minimal $min';
+      if (max != null && n > max) return 'Maksimal $max';
+      value = '$n';
+    }
+    await setSetting(key, value);
+    return null;
+  }
+
   /// Index performa — KRUSIAL untuk database besar.
   /// IF NOT EXISTS = nyaris gratis setelah dibuat pertama kali.
   static Future<void> _ensureIndexes() async {
@@ -1018,12 +1037,13 @@ class DB {
     final now = DateTime.now();
     final start = DateTime(now.year, now.month, now.day).toIso8601String();
     final end = DateTime(now.year, now.month, now.day + 1).toIso8601String();
-    final trx = await _db!.rawQuery('SELECT total_bayar FROM transaksi WHERE tanggal >= ? AND tanggal < ?', [start, end]);
+    final trx = await _db!.rawQuery("SELECT total_bayar FROM transaksi WHERE status='selesai' AND tanggal >= ? AND tanggal < ?", [start, end]);
     final prods = await products;
+    final ambang = await lowStockThreshold();
     final exp = await nearExpBatches();
     return {
       'produk': prods.length,
-      'low': prods.where((p) => ((p['stok'] ?? 0) as int) > 0 && ((p['stok'] ?? 0) as int) < 10).length,
+      'low': prods.where((p) => ((p['stok'] ?? 0) as int) > 0 && ((p['stok'] ?? 0) as int) < ambang).length,
       'trx': trx.length,
       'omset': trx.fold<int>(0, (a, t) => a + ((t['total_bayar'] ?? 0) as int)),
       'nearExp': exp,
@@ -1159,7 +1179,7 @@ class DB {
   }
 
   /// Hapus SELURUH data toko lama: akun, produk, batch, transaksi, pembelian,
-  /// pengeluaran, log, shift, opname, data toko, dan file gambar produk lokal.
+  /// pengeluaran, log, shift, opname, settings, data toko, dan file gambar produk lokal.
   /// Dipakai sebelum pendaftaran/import toko baru demi keamanan.
   static Future<void> _wipeAll() async {
     try {
@@ -1175,6 +1195,7 @@ class DB {
     const tables = [
       'detail_transaksi', 'transaksi', 'detail_pembelian', 'pembelian',
       'stok_batch', 'produk', 'categories', 'pengeluaran', 'log', 'shift', 'opname', 'users', 'toko',
+      'settings', 'login_lock',
     ];
     for (final t in tables) {
       await _db!.delete(t);
@@ -1472,6 +1493,34 @@ class DB {
     }
   }
 
+  /// Export seluruh data toko ke file JSON di folder Documents/backup.
+  /// Format kompatibel dengan importBackup (restore sebagian: master data).
+  /// Return path file, atau null jika gagal.
+  static Future<String?> exportBackupJson() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final bakDir = Directory(p.join(dir.path, 'backup'));
+      if (!await bakDir.exists()) await bakDir.create(recursive: true);
+      final stamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final file = File(p.join(bakDir.path, 'kastra_export_$stamp.json'));
+      final data = <String, dynamic>{};
+      for (final t in ['toko', 'users', 'categories', 'produk', 'stok_batch',
+        'transaksi', 'detail_transaksi', 'pembelian', 'detail_pembelian',
+        'pengeluaran', 'shift', 'opname', 'settings']) {
+        final rows = await _db!.query(t);
+        data[t] = rows;
+      }
+      data['_exported'] = DateTime.now().toIso8601String();
+      await file.writeAsString(jsonEncode(data));
+      await log(session ?? 0, 'Export JSON dibuat: ${p.basename(file.path)}');
+      return file.path;
+    } catch (e) {
+      lastError = e.toString();
+      debugPrint('exportBackupJson: $e');
+      return null;
+    }
+  }
+
   /// Import data toko dari file backup JSON. Data lama DIHAPUS SEMUA dulu.
   /// Return null jika sukses, berisi pesan error jika gagal.
   static Future<String?> importBackup(Map<String, dynamic> json) async {
@@ -1488,6 +1537,14 @@ class DB {
       }
       for (final pr in (json['produk'] as List? ?? [])) {
         await _db!.insert('produk', Map<String, dynamic>.from(pr));
+      }
+      // Pulihkan tabel transaksi & pendukung bila ada (urutan mematuhi FK).
+      for (final tbl in ['stok_batch', 'transaksi', 'detail_transaksi',
+        'pembelian', 'detail_pembelian', 'pengeluaran', 'shift', 'opname', 'settings']) {
+        for (final r in (json[tbl] as List? ?? [])) {
+          await _db!.insert(tbl, Map<String, dynamic>.from(r),
+              conflictAlgorithm: ConflictAlgorithm.replace);
+        }
       }
       return null;
     } catch (e) {

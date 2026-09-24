@@ -125,13 +125,15 @@ class _KasirPageState extends State<KasirPage> {
     int uang = 0;
     int diskon = 0;
     String metode = 'tunai';
+    int taxPct = await DB.taxPercent(); // pajak toko utk tampilan tagihan
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (d) => StatefulBuilder(
         builder: (d, ss) {
           final totalDiskon = (diskon > _total) ? _total : diskon;
-          final tagihan = _total - totalDiskon;
+          final pajak = ((_total - totalDiskon) * taxPct) ~/ 100;
+          final tagihan = _total - totalDiskon + pajak;
           final back = uang - tagihan;
           return AlertDialog(
             title: const Text('Pembayaran', textAlign: TextAlign.center),
@@ -257,6 +259,8 @@ class _KasirPageState extends State<KasirPage> {
 
   Future<void> _receipt(Map trx, List<Map<String, dynamic>> items) async {
     try {
+      final metode = (trx['metode'] ?? 'tunai').toString();
+      final devName = await DB.deviceName();
       final pdf = pw.Document();
       pw.Widget row(String l, dynamic v, {bool bold = false}) => pw.Padding(
             padding: const pw.EdgeInsets.only(top: 3),
@@ -275,7 +279,7 @@ class _KasirPageState extends State<KasirPage> {
           if (_toko?['alamat'] != null && _toko!['alamat'].toString().isNotEmpty)
             pw.Text(_toko!['alamat'].toString(), style: const pw.TextStyle(fontSize: 8)),
           pw.Divider(),
-          pw.Text('${trx['no_transaksi']} · ${fdate(trx['tanggal'], 'dd/MM/yy HH:mm')}\nKasir: $_name', textAlign: pw.TextAlign.center, style: const pw.TextStyle(fontSize: 8)),
+          pw.Text('${trx['no_transaksi']} · ${fdate(trx['tanggal'], 'dd/MM/yy HH:mm')}\nKasir: $_name · $devName', textAlign: pw.TextAlign.center, style: const pw.TextStyle(fontSize: 8)),
           pw.Divider(),
           ...items.map((i) => pw.Padding(
                 padding: const pw.EdgeInsets.only(bottom: 3),
@@ -285,9 +289,11 @@ class _KasirPageState extends State<KasirPage> {
                 ]),
               )),
           pw.Divider(),
+          if (((trx['diskon'] ?? 0) as int? ?? 0) > 0) row('DISKON', -((trx['diskon'] ?? 0) as int? ?? 0)),
+          if (((trx['pajak'] ?? 0) as int? ?? 0) > 0) row('PAJAK', trx['pajak']),
           row('TOTAL', trx['total_bayar'], bold: true),
-          row('BAYAR', trx['uang_diterima']),
-          row('KEMBALIAN', trx['kembalian'], bold: true),
+          row('BAYAR (${metode.toUpperCase()})', trx['uang_diterima']),
+          if (metode == 'tunai') row('KEMBALIAN', trx['kembalian'], bold: true),
           pw.SizedBox(height: 10),
           pw.Center(child: pw.Text('*** TERIMA KASIH ***', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9))),
         ]),
