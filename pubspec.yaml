@@ -43,7 +43,6 @@ dependencies:
   mobile_scanner: ^7.4.2
   barcode: ^2.2.9
   barcode_widget: ^2.0.4
-  supabase_flutter: ^2.17.2
   shared_preferences: ^2.5.5
   google_fonts: ^8.2.1
   sqflite: ^2.4.4

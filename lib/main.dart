@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:kastra/login.dart';
 import 'package:kastra/services.dart';
@@ -7,6 +9,8 @@ import 'package:kastra/widgets.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await DB.init();
+  // Auto-backup harian di background — tidak memblokir startup.
+  unawaited(DB.autoBackupIfDue());
   runApp(const Kastra());
 }
 
