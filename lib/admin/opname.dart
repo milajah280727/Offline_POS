@@ -156,10 +156,14 @@ class _OpnamePageState extends State<OpnamePage> {
                   RefreshIndicator(
                     onRefresh: _fetch,
                     child: _riwayat.isEmpty
-                        ? ListView(children: const Padding(
-                            padding: EdgeInsets.all(40),
-                            child: Center(child: Text('Belum ada riwayat opname.', style: TextStyle(color: C.sub))),
-                          ))
+                        ? const ListView(
+                            children: [
+                              Padding(
+                                padding: EdgeInsets.all(40),
+                                child: Center(child: Text('Belum ada riwayat opname.', style: TextStyle(color: C.sub))),
+                              ),
+                            ],
+                          )
                         : ListView.builder(
                             padding: const EdgeInsets.all(16),
                             itemCount: _riwayat.length,
@@ -196,3 +200,5 @@ class _OpnamePageState extends State<OpnamePage> {
                 ]),
         ),
       );
+
+}

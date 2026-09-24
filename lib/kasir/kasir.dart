@@ -224,6 +224,7 @@ class _KasirPageState extends State<KasirPage> {
     try {
       final subTotal = cart.fold<int>(0, (a, i) => a + (i['harga_jual'] as int) * (i['qty'] as int));
       final diskon = diskonIn.clamp(0, subTotal);
+      final pajak = ((subTotal - diskon) * await DB.taxPercent()) ~/ 100;
       final trx = await DB.commitSale(
         userId: widget.userId,
         items: cart.map((i) => {
@@ -233,8 +234,8 @@ class _KasirPageState extends State<KasirPage> {
           'nama_produk': i['nama_produk'],
         }).toList(),
         diskon: diskon,
-        pajak: 0,
-        uangDiterima: metode == 'tunai' ? uang : subTotal - diskon,
+        pajak: pajak,
+        uangDiterima: metode == 'tunai' ? uang : subTotal - diskon + pajak,
         metode: metode,
       );
       if (trx == null) throw Exception(DB.lastError ?? 'Gagal menyimpan transaksi');

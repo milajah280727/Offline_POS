@@ -6,7 +6,9 @@ import 'package:kastra/admin/dashboard.dart';
 import 'package:kastra/admin/kategori.dart';
 import 'package:kastra/admin/produk.dart';
 import 'package:kastra/admin/users.dart';
+import 'package:kastra/admin/opname.dart';
 import 'package:kastra/kasir/kasir.dart';
+import 'package:kastra/kasir/shift.dart';
 import 'package:kastra/kasir/transaksi.dart';
 import 'package:kastra/login.dart';
 import 'package:kastra/owner/dashboard.dart';
@@ -542,6 +544,7 @@ class _AppDrawerState extends State<AppDrawer> {
       case 'kasir':
         return [
           (Icons.dashboard_outlined, 'Beranda Kasir', KasirPage(userId: id)),
+          (Icons.lock_open_outlined, 'Shift Kasir', ShiftPage(userId: id)),
           (Icons.receipt_long_outlined, 'Riwayat Transaksi', TransaksiPage(userId: id)),
         ];
       case 'owner':
@@ -558,6 +561,7 @@ class _AppDrawerState extends State<AppDrawer> {
           (Icons.dashboard_outlined, 'Beranda Admin', AdminDashboard(userId: id)),
           (Icons.inventory_2_outlined, 'Daftar Produk', ProdukPage(userId: id)),
           (Icons.batch_prediction_outlined, 'Batch Stok', BatchPage(userId: id)),
+          (Icons.fact_check_outlined, 'Opname Stok', OpnamePage(userId: id)),
           (Icons.category_outlined, 'Kategori Produk', KategoriPage(userId: id)),
           (Icons.people_outline, 'Manajemen User', UsersPage(userId: id)),
         ];
