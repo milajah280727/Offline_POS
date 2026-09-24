@@ -7,11 +7,13 @@ import 'package:kastra/admin/kategori.dart';
 import 'package:kastra/admin/produk.dart';
 import 'package:kastra/admin/users.dart';
 import 'package:kastra/admin/opname.dart';
+import 'package:kastra/admin/pengaturan.dart';
 import 'package:kastra/kasir/kasir.dart';
 import 'package:kastra/kasir/shift.dart';
 import 'package:kastra/kasir/transaksi.dart';
 import 'package:kastra/login.dart';
 import 'package:kastra/owner/dashboard.dart';
+import 'package:kastra/owner/laporan.dart';
 import 'package:kastra/owner/log.dart';
 import 'package:kastra/owner/pengeluaran.dart';
 import 'package:kastra/services.dart';
@@ -550,6 +552,7 @@ class _AppDrawerState extends State<AppDrawer> {
       case 'owner':
         return [
           (Icons.dashboard_outlined, 'Beranda Owner', OwnerDashboard(userId: id)),
+          (Icons.insights_outlined, 'Laporan Analitik', LaporanPage(userId: id)),
           (Icons.people_outline, 'Manajemen User', UsersPage(userId: id, ownerMode: true)),
           (Icons.inventory_2_outlined, 'Data Produk', ProdukPage(userId: id, readOnly: true)),
           (Icons.receipt_long_outlined, 'Laporan Transaksi', TransaksiPage(userId: id, semua: true)),
@@ -564,6 +567,7 @@ class _AppDrawerState extends State<AppDrawer> {
           (Icons.fact_check_outlined, 'Opname Stok', OpnamePage(userId: id)),
           (Icons.category_outlined, 'Kategori Produk', KategoriPage(userId: id)),
           (Icons.people_outline, 'Manajemen User', UsersPage(userId: id)),
+          (Icons.settings_outlined, 'Pengaturan Toko', PengaturanPage(userId: id)),
         ];
     }
   }
