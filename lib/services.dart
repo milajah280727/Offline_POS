@@ -84,10 +84,45 @@ class PasswordHasher {
   }
 }
 
+class _LockState {
+  final int fails;
+  final DateTime? lockedUntil;
+  const _LockState(this.fails, this.lockedUntil);
+}
+
 class DB {
   static Database? _db;
   static SharedPreferences? _prefs;
   static String? lastError;
+
+  /// Persisten di file DB (bukan memori) sehingga tidak bisa di-bypass
+  /// dengan restart aplikasi.
+  static Future<_LockState> _loadLock() async {
+    try {
+      final rows = await _db!.query('login_lock', limit: 1);
+      if (rows.isEmpty) return const _LockState(0, null);
+      final until = rows.first['locked_until'];
+      return _LockState(
+        (rows.first['fails'] as int?) ?? 0,
+        until == null ? null : DateTime.tryParse(until.toString()),
+      );
+    } catch (_) {
+      return const _LockState(0, null);
+    }
+  }
+
+  static Future<void> _saveLock(int fails, DateTime? lockedUntil) async {
+    try {
+      await _db!.delete('login_lock');
+      await _db!.insert('login_lock', {
+        'id': 1,
+        'fails': fails,
+        'locked_until': lockedUntil?.toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('saveLock: $e');
+    }
+  }
 
   static Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -95,8 +130,35 @@ class DB {
     // Migrasi ringan untuk database lama: pastikan tabel toko ada.
     await _db!.execute(
         'CREATE TABLE IF NOT EXISTS toko (id_toko INTEGER PRIMARY KEY AUTOINCREMENT, nama_toko TEXT, alamat TEXT, recovery_key TEXT)');
+    // Pengaturan POS (pajak, diskon persen maks, notifikasi stok menipis).
+    await _db!.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)');
+    // Rate-limit login persisten antar-restart.
+    await _db!.execute('CREATE TABLE IF NOT EXISTS login_lock (id INTEGER PRIMARY KEY, fails INTEGER DEFAULT 0, locked_until TEXT)');
     await _ensureIndexes();
+    _lockCache = await _loadLock();
   }
+
+  /// Simpan/ambil pengaturan sederhana key-value.
+  static Future<void> setSetting(String key, String value) async {
+    try {
+      await _db!.insert('settings', {'key': key, 'value': value},
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    } catch (e) {
+      debugPrint('setSetting: $e');
+    }
+  }
+
+  static Future<String?> getSetting(String key) async {
+    try {
+      final rows = await _db!.query('settings', where: 'key = ?', whereArgs: [key], limit: 1);
+      return rows.isEmpty ? null : rows.first['value']?.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Persentase pajak toko (default 0).
+  static Future<int> taxPercent() async => int.tryParse(await getSetting('tax_percent') ?? '0') ?? 0;
 
   /// Index performa — KRUSIAL untuk database besar.
   /// IF NOT EXISTS = nyaris gratis setelah dibuat pertama kali.
@@ -129,7 +191,7 @@ class DB {
 
   static Future<Database> _open() async {
     final dir = await getDatabasesPath();
-    return openDatabase(p.join(dir, 'kastra.db'), version: 2,
+    return openDatabase(p.join(dir, 'kastra.db'), version: 3,
         onConfigure: (db) async {
       // Foreign key ON — integritas referensial ditegakkan SQLite.
       await db.execute('PRAGMA foreign_keys = ON');
@@ -139,8 +201,8 @@ class DB {
       await db.execute('CREATE TABLE categories (id_kategori INTEGER PRIMARY KEY AUTOINCREMENT, nama_kategori TEXT UNIQUE)');
       await db.execute('CREATE TABLE produk (id_produk INTEGER PRIMARY KEY AUTOINCREMENT, nama_produk TEXT, kategori TEXT, harga_jual INTEGER DEFAULT 0, harga_beli INTEGER DEFAULT 0, barcode TEXT UNIQUE, gambar TEXT, is_active INTEGER DEFAULT 1)');
       await db.execute('CREATE TABLE stok_batch (id_batch INTEGER PRIMARY KEY AUTOINCREMENT, id_produk INTEGER REFERENCES produk(id_produk) ON DELETE CASCADE, jumlah_stok INTEGER DEFAULT 0 CHECK (jumlah_stok >= 0), harga_beli_satuan INTEGER DEFAULT 0, tanggal_masuk TEXT, tanggal_exp TEXT)');
-      await db.execute('CREATE TABLE transaksi (id_transaksi INTEGER PRIMARY KEY AUTOINCREMENT, no_transaksi TEXT UNIQUE, id_user INTEGER REFERENCES users(id_user), total_bayar INTEGER DEFAULT 0, diskon INTEGER DEFAULT 0, pajak INTEGER DEFAULT 0, uang_diterima INTEGER DEFAULT 0, kembalian INTEGER DEFAULT 0, metode TEXT DEFAULT "tunai", status TEXT DEFAULT "selesai", void_alasan TEXT, void_oleh INTEGER, void_pada TEXT, tanggal TEXT)');
-      await db.execute('CREATE TABLE detail_transaksi (id_detail INTEGER PRIMARY KEY AUTOINCREMENT, id_transaksi INTEGER REFERENCES transaksi(id_transaksi) ON DELETE CASCADE, id_produk INTEGER REFERENCES produk(id_produk), id_batch INTEGER REFERENCES stok_batch(id_batch), qty INTEGER, subtotal INTEGER, harga_beli_satuan INTEGER DEFAULT 0)');
+      await db.execute('CREATE TABLE transaksi (id_transaksi INTEGER PRIMARY KEY AUTOINCREMENT, no_transaksi TEXT UNIQUE, id_user INTEGER REFERENCES users(id_user), total_bayar INTEGER DEFAULT 0, diskon INTEGER DEFAULT 0, pajak INTEGER DEFAULT 0, uang_diterima INTEGER DEFAULT 0, kembalian INTEGER DEFAULT 0, metode TEXT DEFAULT "tunai", status TEXT DEFAULT "selesai", void_alasan TEXT, void_oleh INTEGER, void_pada TEXT, shift_id INTEGER REFERENCES shift(id_shift), tanggal TEXT)');
+      await db.execute('CREATE TABLE detail_transaksi (id_detail INTEGER PRIMARY KEY AUTOINCREMENT, id_transaksi INTEGER REFERENCES transaksi(id_transaksi) ON DELETE CASCADE, id_produk INTEGER REFERENCES produk(id_produk), id_batch INTEGER REFERENCES stok_batch(id_batch), qty INTEGER, subtotal INTEGER, harga_beli_satuan INTEGER DEFAULT 0, qty_retur INTEGER DEFAULT 0)');
       await db.execute('CREATE TABLE pembelian (id_pembelian INTEGER PRIMARY KEY AUTOINCREMENT, id_user INTEGER REFERENCES users(id_user), supplier TEXT, total_beli INTEGER DEFAULT 0, tanggal TEXT)');
       await db.execute('CREATE TABLE detail_pembelian (id_detail INTEGER PRIMARY KEY AUTOINCREMENT, id_pembelian INTEGER REFERENCES pembelian(id_pembelian) ON DELETE CASCADE, id_produk INTEGER REFERENCES produk(id_produk), qty INTEGER, harga_beli_satuan INTEGER, subtotal INTEGER)');
       await db.execute('CREATE TABLE pengeluaran (id_pengeluaran INTEGER PRIMARY KEY AUTOINCREMENT, keterangan TEXT, nominal INTEGER DEFAULT 0, tanggal TEXT)');
@@ -148,6 +210,8 @@ class DB {
       await db.execute('CREATE TABLE toko (id_toko INTEGER PRIMARY KEY AUTOINCREMENT, nama_toko TEXT, alamat TEXT, recovery_hash TEXT)');
       await db.execute('CREATE TABLE shift (id_shift INTEGER PRIMARY KEY AUTOINCREMENT, id_user INTEGER REFERENCES users(id_user), mulai TEXT, selesai TEXT, modal_awal INTEGER DEFAULT 0, saldo_hitung INTEGER, selisih INTEGER, catatan TEXT)');
       await db.execute('CREATE TABLE opname (id_opname INTEGER PRIMARY KEY AUTOINCREMENT, id_user INTEGER REFERENCES users(id_user), id_produk INTEGER REFERENCES produk(id_produk), stok_sistem INTEGER DEFAULT 0, stok_fisik INTEGER DEFAULT 0, selisih INTEGER DEFAULT 0, alasan TEXT, tanggal TEXT)');
+      await db.execute('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)');
+      await db.execute('CREATE TABLE login_lock (id INTEGER PRIMARY KEY, fails INTEGER DEFAULT 0, locked_until TEXT)');
     },
         onUpgrade: (db, oldV, newV) async {
       // --- v2: keamanan & integritas data + fitur POS ---
@@ -181,6 +245,15 @@ class DB {
           }
         } catch (_) {}
       }
+      // --- v3: retur parsial, shift_id pada transaksi, tabel settings & login_lock ---
+      if (oldV < 3) {
+        for (final c in ['shift_id INTEGER', ]) {
+          try { await db.execute('ALTER TABLE transaksi ADD COLUMN $c'); } catch (_) {}
+        }
+        try { await db.execute('ALTER TABLE detail_transaksi ADD COLUMN qty_retur INTEGER DEFAULT 0'); } catch (_) {}
+        try { await db.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)'); } catch (_) {}
+        try { await db.execute('CREATE TABLE IF NOT EXISTS login_lock (id INTEGER PRIMARY KEY, fails INTEGER DEFAULT 0, locked_until TEXT)'); } catch (_) {}
+      }
     });
   }
 
@@ -202,34 +275,31 @@ class DB {
   static int? get session => _prefs?.getInt('uid');
   static Future<void> clearSession() async => _prefs?.remove('uid');
 
-  // --- proteksi brute-force (rate limit lokal) ---
+  // --- proteksi brute-force (rate limit PERSISTEN di DB) ---
   static const int _maxFails = 5;
   static const Duration _lockDuration = Duration(minutes: 1);
-  int _fails = 0;
-  DateTime? _lockedUntil;
+  static _LockState _lockCache = const _LockState(0, null);
 
   /// Sisa waktu kunci akun akibat gagal login berulang (null = tidak terkunci).
-  Duration? get loginLockRemaining {
-    if (_lockedUntil == null) return null;
-    final rem = _lockedUntil!.difference(DateTime.now());
+  static Duration? get loginLockRemaining {
+    final until = _lockCache.lockedUntil;
+    if (until == null) return null;
+    final rem = until.difference(DateTime.now());
     if (rem.isNegative) {
-      _lockedUntil = null;
-      _fails = 0;
+      _lockCache = const _LockState(0, null);
+      unawaited(_saveLock(0, null));
       return null;
     }
     return rem;
   }
 
-  static final DB _inst = DB._();
-  DB._();
-
   // --- user ---
   static Future<Map<String, dynamic>?> login(String u, String p) async {
     try {
-      if (_inst.loginLockRemaining != null) return null; // akun terkunci sementara
+      if (loginLockRemaining != null) return null; // akun terkunci sementara
       final rows = await _db!.query('users', where: 'username = ? AND is_active = 1', whereArgs: [u.trim()], limit: 1);
       if (rows.isEmpty) {
-        _inst._registerFail();
+        await _registerFail();
         return null;
       }
       final row = rows.first;
@@ -241,11 +311,11 @@ class DB {
       final ok = res == true;
       final isPlaintext = !stored.startsWith('pbkdf2\$');
       if (!ok) {
-        _inst._registerFail();
+        await _registerFail();
         return null;
       }
-      _inst._fails = 0;
-      _inst._lockedUntil = null;
+      _lockCache = const _LockState(0, null);
+      await _saveLock(0, null);
       if (isPlaintext) {
         // migrasikan data lama (plaintext) -> hash PBKDF2
         unawaited(_upgradePassword(row['id_user'] as int, p));
@@ -259,11 +329,15 @@ class DB {
     }
   }
 
-  void _registerFail() {
-    _fails++;
-    if (_fails >= _maxFails) {
-      _lockedUntil = DateTime.now().add(_lockDuration);
-      _fails = 0;
+  static Future<void> _registerFail() async {
+    final fails = _lockCache.fails + 1;
+    if (fails >= _maxFails) {
+      final until = DateTime.now().add(_lockDuration);
+      _lockCache = _LockState(0, until);
+      await _saveLock(0, until);
+    } else {
+      _lockCache = _LockState(fails, null);
+      await _saveLock(fails, null);
     }
   }
 
@@ -606,12 +680,12 @@ class DB {
   static Future<void> insertDetail(Map<String, dynamic> data) async => await _db!.insert('detail_transaksi', data);
 
   /// Nomor transaksi unik & berurutan: TRX-YYYYMMDD-0001 (dibuat di dalam txn).
-  static Future<String> _nextNoTrx(Transaction txn, DateTime now) async {
+  static Future<String> _nextNoTrx(Transaction txn, DateTime now, {String prefix = 'TRX'}) async {
     final day = DateFormat('yyyyMMdd').format(now);
     final rows = await txn.rawQuery(
-        "SELECT COUNT(*) AS n FROM transaksi WHERE no_transaksi LIKE ?", ['TRX-$day-%']);
+        "SELECT COUNT(*) AS n FROM transaksi WHERE no_transaksi LIKE ?", ['$prefix-$day-%']);
     final n = ((rows.first['n'] ?? 0) as int) + 1;
-    return 'TRX-$day-${n.toString().padLeft(4, '0')}';
+    return '$prefix-$day-${n.toString().padLeft(4, '0')}';
   }
 
   /// Simpan transaksi SECARA ATOMIK: header + detail + deduksi stok FEFO
@@ -628,6 +702,7 @@ class DB {
     int? shiftId,
   }) async {
     try {
+      shiftId ??= (await activeShift(userId))?['id_shift'] as int?;
       final subTotal = items.fold<int>(0, (a, i) => a + (i['harga_jual'] as int) * (i['qty'] as int));
       var total = subTotal - diskon + pajak;
       if (total < 0) total = 0;
@@ -646,6 +721,7 @@ class DB {
           'kembalian': metode == 'tunai' ? uangDiterima - total : 0,
           'metode': metode,
           'status': 'selesai',
+          'shift_id': shiftId,
           'tanggal': now.toIso8601String(),
         });
         for (final item in items) {
@@ -738,6 +814,118 @@ class DB {
       lastError = e.toString();
       debugPrint('voidTransaction: $e');
       return e.toString();
+    }
+  }
+
+  /// RETUR PARSIAL: kembalikan sebagian qty item tertentu ke batch asal
+  /// (FEFO terbalik: batch yang paling akhir dipakai dikembalikan lebih dulu),
+  /// lalu buat transaksi penyesuaian bertipe 'retur' dengan total negatif.
+  /// Transaksi asal TETAP selesai (tidak divoid) — sesuai praktik POS.
+  /// Return header transaksi retur; null jika gagal (cek [lastError]).
+  static Future<Map<String, dynamic>?> partialReturn({
+    required int idTrxAsal,
+    required List<Map<String, dynamic>> items, // {id_detail, qty_retur}
+    required int userId,
+    required String alasan,
+    String metode = 'tunai',
+  }) async {
+    try {
+      final now = DateTime.now();
+      late Map<String, dynamic> header;
+      await _db!.transaction((txn) async {
+        final orig = await txn.query('transaksi', where: 'id_transaksi = ?', whereArgs: [idTrxAsal], limit: 1);
+        if (orig.isEmpty) throw Exception('Transaksi tidak ditemukan');
+        if ((orig.first['status'] ?? '') == 'void') throw Exception('Transaksi void tidak bisa diretur');
+        int totalRetur = 0;
+        for (final it in items) {
+          final idDetail = it['id_detail'] as int;
+          final qtyRetur = it['qty_retur'] as int;
+          if (qtyRetur <= 0) continue;
+          final drows = await txn.query('detail_transaksi', where: 'id_detail = ?', whereArgs: [idDetail], limit: 1);
+          if (drows.isEmpty) throw Exception('Detail transaksi tidak ditemukan');
+          final d = drows.first;
+          final qtyAwal = d['qty'] as int;
+          final sudahRetur = (d['qty_retur'] as int?) ?? 0;
+          if (qtyRetur + sudahRetur > qtyAwal) {
+            throw Exception('Qty retur melebihi sisa item (${qtyAwal - sudahRetur} tersedia)');
+          }
+          final hargaSatuan = qtyAwal == 0 ? 0 : ((d['subtotal'] as int) / qtyAwal).round();
+          totalRetur += hargaSatuan * qtyRetur;
+          // tandai qty_retur pada detail asal
+          await txn.update('detail_transaksi', {'qty_retur': sudahRetur + qtyRetur},
+              where: 'id_detail = ?', whereArgs: [idDetail]);
+          // kembalikan stok ke batch asal bila masih ada kolomnya
+          final idBatch = d['id_batch'];
+          if (idBatch != null) {
+            await txn.rawUpdate('UPDATE stok_batch SET jumlah_stok = jumlah_stok + ? WHERE id_batch = ?',
+                [qtyRetur, idBatch]);
+          } else {
+            // fallback: batch aktif produk tersebut
+            final b = await txn.query('stok_batch',
+                columns: ['id_batch'], where: 'id_produk = ?', whereArgs: [d['id_produk']],
+                orderBy: 'tanggal_exp ASC', limit: 1);
+            if (b.isNotEmpty) {
+              await txn.rawUpdate('UPDATE stok_batch SET jumlah_stok = jumlah_stok + ? WHERE id_batch = ?',
+                  [qtyRetur, b.first['id_batch']]);
+            }
+          }
+          // catat sebagai baris retur (qty negatif) pada transaksi baru nanti
+        }
+        if (totalRetur <= 0) throw Exception('Tidak ada item untuk diretur');
+        final no = await _nextNoTrx(txn, now, prefix: 'RTX');
+        final idRetur = await txn.insert('transaksi', {
+          'no_transaksi': no,
+          'id_user': userId,
+          'total_bayar': -totalRetur,
+          'diskon': 0,
+          'pajak': 0,
+          'uang_diterima': -totalRetur,
+          'kembalian': 0,
+          'metode': metode,
+          'status': 'retur',
+          'void_alasan': alasan, // pakai kolom alasan untuk catatan retur
+          'void_oleh': userId,
+          'void_pada': now.toIso8601String(),
+          'tanggal': now.toIso8601String(),
+        });
+        // salin baris detail dengan qty negatif agar laporan HPP/omset konsisten
+        for (final it in items) {
+          final idDetail = it['id_detail'] as int;
+          final qtyRetur = it['qty_retur'] as int;
+          if (qtyRetur <= 0) continue;
+          final d = (await txn.query('detail_transaksi', where: 'id_detail = ?', whereArgs: [idDetail], limit: 1)).first;
+          final qtyAwal = d['qty'] as int;
+          final hargaSatuan = qtyAwal == 0 ? 0 : ((d['subtotal'] as int) / qtyAwal).round();
+          await txn.insert('detail_transaksi', {
+            'id_transaksi': idRetur,
+            'id_produk': d['id_produk'],
+            'id_batch': d['id_batch'],
+            'qty': -qtyRetur,
+            'subtotal': -hargaSatuan * qtyRetur,
+            'harga_beli_satuan': d['harga_beli_satuan'] ?? 0,
+          });
+        }
+        await txn.insert('log', {
+          'id_user': userId,
+          'aktivitas': 'RETUR ${orig.first['no_transaksi']} sebesar $totalRetur: $alasan',
+          'waktu': now.toIso8601String(),
+        });
+        header = {
+          'id_transaksi': idRetur,
+          'no_transaksi': no,
+          'id_user': userId,
+          'total_bayar': -totalRetur,
+          'metode': metode,
+          'status': 'retur',
+          'tanggal': now.toIso8601String(),
+          'asal': orig.first['no_transaksi'],
+        };
+      });
+      return header;
+    } catch (e) {
+      lastError = e.toString();
+      debugPrint('partialReturn: $e');
+      return null;
     }
   }
 
@@ -1036,15 +1224,28 @@ class DB {
     return rows.isEmpty ? null : rows.first;
   }
 
-  static Future<bool> openShift(int userId, int modalAwal) => run(() async {
-        final existing = await activeShift(userId);
-        if (existing != null) throw Exception('Shift masih terbuka — tutup dulu sebelum buka baru');
-        await _db!.insert('shift', {
-          'id_user': userId,
-          'mulai': DateTime.now().toIso8601String(),
-          'modal_awal': modalAwal,
-        });
+  /// Buka shift kasir. Return header shift (berisi id_shift) atau null jika gagal.
+  static Future<Map<String, dynamic>?> openShiftReturn(int userId, int modalAwal) async {
+    try {
+      final existing = await activeShift(userId);
+      if (existing != null) throw Exception('Shift masih terbuka — tutup dulu sebelum buka baru');
+      final id = await _db!.insert('shift', {
+        'id_user': userId,
+        'mulai': DateTime.now().toIso8601String(),
+        'modal_awal': modalAwal,
       });
+      await log(userId, 'Buka shift dengan modal Rp $modalAwal');
+      final rows = await _db!.query('shift', where: 'id_shift = ?', whereArgs: [id], limit: 1);
+      return rows.isEmpty ? {'id_shift': id} : rows.first;
+    } catch (e) {
+      lastError = e.toString();
+      debugPrint('openShift: $e');
+      return null;
+    }
+  }
+
+  static Future<bool> openShift(int userId, int modalAwal) async =>
+      (await openShiftReturn(userId, modalAwal)) != null;
 
   /// Tutup shift: hitung penjualan tunai selama shift, bandingkan dengan saldo hitung.
   /// Return ringkasan {penjualan_tunai, seharusnya, selisih} atau lempar lewat lastError.
@@ -1053,10 +1254,13 @@ class DB {
       final sh = await activeShift(userId);
       if (sh == null) throw Exception('Tidak ada shift terbuka');
       final mulai = DateTime.parse(sh['mulai'].toString());
+      // Prioritaskan transaksi yang di-tag ke shift ini; baris lama tanpa tag
+      // dihitung berdasarkan rentang waktu (kompatibel sebelum fitur shift_id).
       final rows = await _db!.rawQuery(
           "SELECT COALESCE(SUM(kembalian),0) AS kembali, COALESCE(SUM(total_bayar),0) AS total FROM transaksi "
-          "WHERE id_user = ? AND metode = 'tunai' AND status = 'selesai' AND tanggal >= ?",
-          [userId, mulai.toIso8601String()]);
+          "WHERE id_user = ? AND metode = 'tunai' AND status = 'selesai' AND tanggal >= ? "
+          "AND (shift_id = ? OR shift_id IS NULL)",
+          [userId, mulai.toIso8601String(), sh['id_shift']]);
       final totalTunai = (rows.first['total'] ?? 0) as int;
       final kembali = (rows.first['kembali'] ?? 0) as int;
       final penjualanTunai = totalTunai - kembali + (sh['modal_awal'] as int? ?? 0);
@@ -1174,6 +1378,26 @@ class DB {
     if (rows.isEmpty) return [];
     final header = rows.first.keys.toList();
     return [header, ...rows.map((r) => header.map((k) => r[k]).toList())];
+  }
+
+  /// Tulis baris CSV ke file di folder Documents/export. Return path file.
+  static Future<String> writeCsvFile(String name, List<List<dynamic>> rows) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final expDir = Directory(p.join(dir.path, 'export'));
+    if (!await expDir.exists()) await expDir.create(recursive: true);
+    final safe = name.replaceAll(RegExp(r'[^A-Za-z0-9_\-]'), '_');
+    final file = File(p.join(expDir.path, '$safe.csv'));
+    final buf = StringBuffer();
+    for (final r in rows) {
+      buf.writeln(r.map((c) {
+        final s = (c ?? '').toString();
+        return s.contains(',') || s.contains('"') || s.contains('\n')
+            ? '"${s.replaceAll('"', '""')}"'
+            : s;
+      }).join(','));
+    }
+    await file.writeAsString(buf.toString());
+    return file.path;
   }
 
   // ===========================================================================

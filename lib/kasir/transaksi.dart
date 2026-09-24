@@ -163,11 +163,17 @@ class _TransaksiPageState extends State<TransaksiPage> {
                               ),
                               isThreeLine: true,
                               trailing: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                                Text(rp(t['total_bayar']), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: C.green)),
+                                Text(rp(t['total_bayar']), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800,
+                                    color: (t['total_bayar'] as int? ?? 0) < 0 ? C.red : C.green)),
                                 if ((t['status'] ?? '') == 'void')
                                   const Padding(
                                     padding: EdgeInsets.only(top: 4),
                                     child: Pill('VOID', fg: C.red, bg: C.redBg),
+                                  )
+                                else if ((t['status'] ?? '') == 'retur')
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 4),
+                                    child: Pill('RETUR', fg: C.orange, bg: C.orangeBg),
                                   ),
                               ]),
                             ),
@@ -251,12 +257,103 @@ class _DetailPageState extends State<DetailPage> {
     }
   }
 
+  /// Retur parsial: pilih qty per item yang dikembalikan. Hanya admin/owner,
+  /// wajib alasan. Stok kembali ke batch asal; dibuat transaksi 'retur' baru.
+  Future<void> _returnTrx() async {
+    final eligible = _items.where((it) {
+      final q = (it['qty'] ?? 0) as int;
+      return q > 0 && ((it['qty_retur'] ?? 0) as int) < q;
+    }).toList();
+    if (eligible.isEmpty) {
+      snack(context, 'Tidak ada item tersisa yang bisa diretur', err: true);
+      return;
+    }
+    final qty = <int, int>{for (final it in eligible) it['id_detail'] as int: 0};
+    final reason = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => StatefulBuilder(
+        builder: (d, ss) => AlertDialog(
+          title: const Text('Retur Sebagian', textAlign: TextAlign.center),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                ...eligible.map((it) {
+                  final max = ((it['qty'] ?? 0) as int) - ((it['qty_retur'] ?? 0) as int);
+                  final id = it['id_detail'] as int;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(children: [
+                      Expanded(
+                        child: Text('${(it['produk'] as Map?)?['nama_produk'] ?? '-'} (sisa $max)',
+                            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.remove_circle_outline, size: 18),
+                        onPressed: () => ss(() => qty[id] = ((qty[id] ?? 0) - 1).clamp(0, max)),
+                      ),
+                      Text('${qty[id] ?? 0}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                      IconButton(
+                        icon: const Icon(Icons.add_circle_outline, size: 18),
+                        onPressed: () => ss(() => qty[id] = ((qty[id] ?? 0) + 1).clamp(0, max)),
+                      ),
+                    ]),
+                  );
+                }),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: reason,
+                  decoration: const InputDecoration(labelText: 'Alasan retur (wajib)'),
+                ),
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(d), child: const Text('Batal')),
+            ElevatedButton(
+              onPressed: () {
+                if (reason.text.trim().isEmpty) return;
+                if (!qty.values.any((v) => v > 0)) return;
+                Navigator.pop(d, true);
+              },
+              child: const Text('Proses Retur'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final items = qty.entries.where((e) => e.value > 0)
+        .map((e) => {'id_detail': e.key, 'qty_retur': e.value})
+        .toList();
+    final res = await DB.partialReturn(
+      idTrxAsal: widget.trx['id_transaksi'] as int,
+      items: items,
+      userId: _me!['id_user'] as int,
+      alasan: reason.text.trim(),
+      metode: (widget.trx['metode'] ?? 'tunai').toString(),
+    );
+    if (!mounted) return;
+    if (res == null) {
+      snack(context, 'Retur gagal: ${DB.lastError ?? 'unknown'}', err: true);
+      return;
+    }
+    snack(context, 'Retur berhasil: ${res['no_transaksi']}');
+    final fresh = await DB.transaksiById(widget.trx['id_transaksi'] as int);
+    if (fresh != null && mounted) setState(() => widget.trx..clear()..addAll(fresh));
+    _fetch();
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = widget.trx;
     final isVoid = (t['status'] ?? '') == 'void';
     final role = (_me?['role'] ?? '').toString();
     final mayVoid = !isVoid && (role == 'admin' || role == 'owner');
+    final status = (t['status'] ?? '').toString();
+    final mayReturn = (status == 'selesai') && (role == 'admin' || role == 'owner');
     return Scaffold(
       appBar: AppBar(title: const Text('Detail Transaksi')),
       body: Column(children: [
@@ -328,8 +425,26 @@ class _DetailPageState extends State<DetailPage> {
           child: Column(children: [
             _row('Total Belanja', t['total_bayar']),
             if (((t['diskon'] ?? 0) as int) > 0) _row('Diskon', -((t['diskon']) as int)),
+            if (((t['pajak'] ?? 0) as int) > 0) _row('Pajak', (t['pajak']) as int),
             _row('Uang Diterima', t['uang_diterima']),
             _row('Kembalian', t['kembalian'], accent: true),
+            if (mayVoid || mayReturn) const SizedBox(height: 10),
+            if (mayReturn) ...[
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: OutlinedButton.icon(
+                  onPressed: _returnTrx,
+                  icon: const Icon(Icons.assignment_return_outlined, size: 18),
+                  label: const Text('Retur Sebagian'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: C.orange,
+                    side: const BorderSide(color: C.orange, width: 1.3),
+                  ),
+                ),
+              ),
+              if (mayVoid) const SizedBox(height: 8),
+            ],
             if (mayVoid) ...[
               const SizedBox(height: 10),
               SizedBox(
