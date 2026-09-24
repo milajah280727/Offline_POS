@@ -121,13 +121,18 @@ class _KasirPageState extends State<KasirPage> {
       return;
     }
     final ctrl = TextEditingController();
+    final discCtrl = TextEditingController();
     int uang = 0;
+    int diskon = 0;
+    String metode = 'tunai';
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (d) => StatefulBuilder(
         builder: (d, ss) {
-          final back = uang - _total;
+          final totalDiskon = (diskon > _total) ? _total : diskon;
+          final tagihan = _total - totalDiskon;
+          final back = uang - tagihan;
           return AlertDialog(
             title: const Text('Pembayaran', textAlign: TextAlign.center),
             content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -135,73 +140,104 @@ class _KasirPageState extends State<KasirPage> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(color: C.fieldFill, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.border)),
-                child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  const Text('Total', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.sub)),
-                  Text(rp(_total), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: C.ink)),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    const Text('Subtotal', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.sub)),
+                    Text(rp(_total), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: C.ink)),
+                  ]),
+                  if (totalDiskon > 0) ...[
+                    const SizedBox(height: 4),
+                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      const Text('Diskon', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.red)),
+                      Text('-${rp(totalDiskon)}', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: C.red)),
+                    ]),
+                    const SizedBox(height: 4),
+                  ],
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    const Text('Total Tagihan', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.sub)),
+                    Text(rp(tagihan), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: C.ink)),
+                  ]),
                 ]),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
+              // Metode pembayaran — non-tunai tidak perlu uang diterima.
+              Wrap(spacing: 8, children: ['tunai', 'qris', 'debit'].map((m) {
+                final sel = metode == m;
+                return ChoiceChip(
+                  label: Text(m.toUpperCase()),
+                  selected: sel,
+                  onSelected: (_) => ss(() => metode = m),
+                );
+              }).toList()),
+              const SizedBox(height: 10),
               TextField(
-                controller: ctrl,
-                autofocus: true,
+                controller: discCtrl,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Uang Diterima', prefixText: 'Rp '),
-                onChanged: (v) => ss(() => uang = int.tryParse(v.replaceAll('.', '')) ?? 0),
+                decoration: const InputDecoration(labelText: 'Diskon (Rp, opsional)', prefixText: 'Rp '),
+                onChanged: (v) => ss(() => diskon = int.tryParse(v.replaceAll('.', '')) ?? 0),
               ),
-              const SizedBox(height: 14),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: back < 0 ? C.redBg : C.greenBg,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: back < 0 ? C.redBorder : const Color(0xFFBBF7D0)),
+              if (metode == 'tunai') ...[
+                const SizedBox(height: 10),
+                TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Uang Diterima', prefixText: 'Rp '),
+                  onChanged: (v) => ss(() => uang = int.tryParse(v.replaceAll('.', '')) ?? 0),
                 ),
-                child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  const Text('Kembalian', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.sub)),
-                  Text(rp(back < 0 ? 0 : back), style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: back < 0 ? C.red : C.green)),
-                ]),
-              ),
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: back < 0 ? C.redBg : C.greenBg,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: back < 0 ? C.redBorder : const Color(0xFFBBF7D0)),
+                  ),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    const Text('Kembalian', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: C.sub)),
+                    Text(rp(back < 0 ? 0 : back), style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: back < 0 ? C.red : C.green)),
+                  ]),
+                ),
+              ],
             ]),
             actions: [
-              SizedBox(width: double.infinity, height: 52, child: ElevatedButton(onPressed: uang >= _total ? () => Navigator.pop(d, true) : null, child: const Text('Bayar'))),
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton(
+                  onPressed: (metode == 'tunai' ? uang >= tagihan : true) ? () => Navigator.pop(d, true) : null,
+                  child: const Text('Bayar'),
+                ),
+              ),
             ],
           );
         },
       ),
     );
-    if (ok == true) _process(uang, List<Map<String, dynamic>>.from(_cart));
+    if (ok == true) _process(uang, List<Map<String, dynamic>>.from(_cart), diskon, metode);
   }
 
-  Future<void> _process(int uang, List<Map<String, dynamic>> cart) async {
+  /// Proses penjualan via DB.commitSale — atomik (header + detail + stok FEFO).
+  Future<void> _process(int uang, List<Map<String, dynamic>> cart, int diskonIn, String metode) async {
     showDialog(context: context, barrierDismissible: false, builder: (_) => const Center(child: CircularProgressIndicator(color: C.primary)));
     try {
-      final total = cart.fold<int>(0, (a, i) => a + (i['harga_jual'] as int) * (i['qty'] as int));
-      final no = 'TRX-${DateTime.now().millisecondsSinceEpoch}';
-      final trx = await DB.insertTransaction({
-        'no_transaksi': no,
-        'id_user': widget.userId,
-        'total_bayar': total,
-        'uang_diterima': uang,
-        'kembalian': uang - total,
-        'tanggal': DateTime.now().toIso8601String(),
-      });
-      if (trx == null) throw Exception('Gagal menyimpan transaksi');
-
-      for (final item in cart) {
-        for (final u in await _fefo(item['id_produk'] as int, item['qty'] as int)) {
-          await DB.insertDetail({
-            'id_transaksi': trx['id_transaksi'],
-            'id_produk': item['id_produk'],
-            'qty': u['qty'],
-            'subtotal': (item['harga_jual'] as int) * (u['qty'] as int),
-            'id_batch': u['id_batch'],
-            'harga_beli_satuan': u['harga_beli_satuan'],
-          });
-        }
-      }
-
-      await DB.log(widget.userId, 'Transaksi $no sebesar ${rp(total)}');
+      final subTotal = cart.fold<int>(0, (a, i) => a + (i['harga_jual'] as int) * (i['qty'] as int));
+      final diskon = diskonIn.clamp(0, subTotal);
+      final trx = await DB.commitSale(
+        userId: widget.userId,
+        items: cart.map((i) => {
+          'id_produk': i['id_produk'],
+          'qty': i['qty'],
+          'harga_jual': i['harga_jual'],
+          'nama_produk': i['nama_produk'],
+        }).toList(),
+        diskon: diskon,
+        pajak: 0,
+        uangDiterima: metode == 'tunai' ? uang : subTotal - diskon,
+        metode: metode,
+      );
+      if (trx == null) throw Exception(DB.lastError ?? 'Gagal menyimpan transaksi');
 
       if (!mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
@@ -213,24 +249,9 @@ class _KasirPageState extends State<KasirPage> {
       debugPrint('$e');
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop();
-        snack(context, 'Gagal memproses transaksi', err: true);
+        snack(context, 'Gagal: ${DB.lastError ?? e}', err: true);
       }
     }
-  }
-
-  /// Deduksi stok FEFO (First Expired First Out).
-  Future<List<Map<String, dynamic>>> _fefo(int idProduk, int need) async {
-    final batches = await DB.fefoBatches(idProduk);
-    final used = <Map<String, dynamic>>[];
-    for (final b in batches) {
-      if (need <= 0) break;
-      final stok = b['jumlah_stok'] as int;
-      final take = stok > need ? need : stok;
-      used.add({'id_batch': b['id_batch'], 'qty': take, 'harga_beli_satuan': b['harga_beli_satuan'] ?? 0});
-      await DB.reduceBatch(b['id_batch'] as int, take);
-      need -= take;
-    }
-    return used;
   }
 
   Future<void> _receipt(Map trx, List<Map<String, dynamic>> items) async {

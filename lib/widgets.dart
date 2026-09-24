@@ -364,6 +364,55 @@ class _AccountButtonState extends State<AccountButton> {
   Color get _rc =>
       {'admin': C.primary, 'owner': C.purple, 'kasir': C.teal}[(_user?['role'] ?? '').toString()] ?? C.sub;
 
+  /// Ganti password sendiri — verifikasi password lama, simpan hash baru.
+  Future<void> _changePassword() async {
+    final lama = TextEditingController();
+    final baru = TextEditingController();
+    final ulang = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: const Text('Ganti Password', textAlign: TextAlign.center),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: lama, obscureText: true, decoration: const InputDecoration(labelText: 'Password Lama')),
+          const SizedBox(height: 10),
+          TextField(controller: baru, obscureText: true, decoration: const InputDecoration(labelText: 'Password Baru')),
+          const SizedBox(height: 10),
+          TextField(controller: ulang, obscureText: true, decoration: const InputDecoration(labelText: 'Ulangi Password Baru')),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: const Text('Batal')),
+          Builder(builder: (dd) => ElevatedButton(
+            onPressed: () {
+              if (baru.text.length < 6) {
+                snack(dd, 'Password baru minimal 6 karakter', err: true);
+                return;
+              }
+              if (baru.text != ulang.text) {
+                snack(dd, 'Konfirmasi tidak sama', err: true);
+                return;
+              }
+              Navigator.pop(d, true);
+            },
+            child: const Text('Simpan'),
+          )),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      final success = await DB.changeOwnPassword(widget.userId, lama.text, baru.text);
+      if (mounted) snack(context, success ? 'Password berhasil diganti' : 'Ganti password gagal / password lama salah', err: !success);
+    }
+  }
+
+  Future<void> _logout() async {
+    if (!await confirm(context, 'Logout', 'Yakin ingin logout?', okLabel: 'Logout', okColor: C.red)) return;
+    await DB.log(widget.userId, 'Logout pada ${fdate(DateTime.now())}');
+    await DB.clearSession();
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginPage()), (r) => false);
+  }
+
   void _showInfo() {
     final u = _user;
     if (u == null) return;
@@ -396,6 +445,44 @@ class _AccountButtonState extends State<AccountButton> {
               decoration: BoxDecoration(color: _rc.withOpacity(.1), borderRadius: BorderRadius.circular(8)),
               child: Text((u['role'] ?? '').toString().toUpperCase(),
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: _rc, letterSpacing: 1)),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(b);
+                  _changePassword();
+                },
+                icon: const Icon(Icons.lock_outline_rounded, size: 18),
+                label: const Text('Ganti Password'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: C.ink,
+                  side: const BorderSide(color: C.border, width: 1.3),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(b);
+                  _logout();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: C.redBg,
+                  foregroundColor: C.red,
+                  elevation: 0,
+                  side: const BorderSide(color: C.redBorder, width: 1.3),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                icon: const Icon(Icons.logout_rounded, size: 18),
+                label: const Text('Log Out', style: TextStyle(fontWeight: FontWeight.w800)),
+              ),
             ),
             const SizedBox(height: 8),
           ]),
