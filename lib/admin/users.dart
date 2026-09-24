@@ -153,13 +153,12 @@ class _UsersPageState extends State<UsersPage> {
         'nama_lengkap': nama.text.trim(),
         'username': user.text.trim(),
         'role': role,
-        'password': pass.text.trim(),
         'is_active': 1,
-      });
+      }, plainPassword: pass.text.trim());
       if (ok) await DB.log(widget.userId, 'Menambah user: ${nama.text} ($role)');
     } else {
       final data = <String, dynamic>{'nama_lengkap': nama.text.trim(), 'username': user.text.trim()};
-      if (isiPass) data['password'] = pass.text.trim();
+      if (isiPass) data['newPassword'] = pass.text.trim(); // di-hash oleh DB.updateUser
       ok = await DB.updateUser(u['id_user'], data);
       if (ok) await DB.log(widget.userId, 'Mengubah user: ${u['nama_lengkap']}');
     }

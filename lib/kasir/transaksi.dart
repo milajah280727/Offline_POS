@@ -162,7 +162,14 @@ class _TransaksiPageState extends State<TransaksiPage> {
                                     style: const TextStyle(fontSize: 11, color: C.sub, height: 1.5)),
                               ),
                               isThreeLine: true,
-                              trailing: Text(rp(t['total_bayar']), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: C.green)),
+                              trailing: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                                Text(rp(t['total_bayar']), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: C.green)),
+                                if ((t['status'] ?? '') == 'void')
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 4),
+                                    child: Pill('VOID', fg: C.red, bg: C.redBg),
+                                  ),
+                              ]),
                             ),
                           );
                         },
@@ -183,11 +190,13 @@ class DetailPage extends StatefulWidget {
 class _DetailPageState extends State<DetailPage> {
   List<Map<String, dynamic>> _items = [];
   bool _load = true;
+  Map<String, dynamic>? _me;
 
   @override
   void initState() {
     super.initState();
     _fetch();
+    if (DB.session != null) DB.getUser(DB.session!).then((u) { if (mounted) setState(() => _me = u); });
   }
 
   Future<void> _fetch() async {
@@ -205,9 +214,49 @@ class _DetailPageState extends State<DetailPage> {
     }
   }
 
+  /// Void transaksi — hanya admin/owner, wajib alasan, stok otomatis kembali.
+  Future<void> _voidTrx() async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: const Text('Void Transaksi', textAlign: TextAlign.center),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Stok akan dikembalikan ke batch asal. Tindakan dicatat di log.',
+              textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: C.sub)),
+          const SizedBox(height: 12),
+          TextField(controller: ctrl, decoration: const InputDecoration(labelText: 'Alasan void (wajib)')),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: const Text('Batal')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: C.red, foregroundColor: Colors.white),
+            onPressed: () {
+              if (ctrl.text.trim().isEmpty) return;
+              Navigator.pop(d, true);
+            },
+            child: const Text('Void'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final err = await DB.voidTransaction(widget.trx['id_transaksi'] as int, _me!['id_user'] as int, ctrl.text.trim());
+    if (!mounted) return;
+    snack(context, err ?? 'Transaksi divoid — stok dikembalikan', err: err != null);
+    if (err == null) {
+      // muat ulang header agar status void tampil
+      final fresh = await DB.transaksiById(widget.trx['id_transaksi'] as int);
+      if (fresh != null && mounted) setState(() => widget.trx..clear()..addAll(fresh));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = widget.trx;
+    final isVoid = (t['status'] ?? '') == 'void';
+    final role = (_me?['role'] ?? '').toString();
+    final mayVoid = !isVoid && (role == 'admin' || role == 'owner');
     return Scaffold(
       appBar: AppBar(title: const Text('Detail Transaksi')),
       body: Column(children: [
@@ -217,11 +266,15 @@ class _DetailPageState extends State<DetailPage> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Expanded(child: Text(t['no_transaksi'] ?? '-', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: C.ink))),
-                const Pill('Berhasil', fg: C.green, bg: C.greenBg),
+                Pill(isVoid ? 'VOID' : 'Berhasil', fg: isVoid ? C.red : C.green, bg: isVoid ? C.redBg : C.greenBg),
               ]),
               const SizedBox(height: 6),
               Text(fdate(t['tanggal']), style: const TextStyle(fontSize: 12, color: C.sub)),
               Text('Kasir: ${((t['users'] as Map?)?['nama_lengkap']) ?? '-'}', style: const TextStyle(fontSize: 12, color: C.sub)),
+              Text('Metode: ${(t['metode'] ?? 'tunai').toString().toUpperCase()}', style: const TextStyle(fontSize: 12, color: C.sub)),
+              if (isVoid && (t['void_alasan'] ?? '').toString().isNotEmpty)
+                Text('Alasan void: ${t['void_alasan']} (${fdate(t['void_pada'])})',
+                    style: const TextStyle(fontSize: 11.5, color: C.red)),
             ]),
           ),
         ),
@@ -272,7 +325,28 @@ class _DetailPageState extends State<DetailPage> {
             border: Border(top: BorderSide(color: C.border)),
           ),
           padding: const EdgeInsets.all(16),
-          child: Column(children: [_row('Total Belanja', t['total_bayar']), _row('Uang Diterima', t['uang_diterima']), _row('Kembalian', t['kembalian'], accent: true)]),
+          child: Column(children: [
+            _row('Total Belanja', t['total_bayar']),
+            if (((t['diskon'] ?? 0) as int) > 0) _row('Diskon', -((t['diskon']) as int)),
+            _row('Uang Diterima', t['uang_diterima']),
+            _row('Kembalian', t['kembalian'], accent: true),
+            if (mayVoid) ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: OutlinedButton.icon(
+                  onPressed: _voidTrx,
+                  icon: const Icon(Icons.block_rounded, size: 18),
+                  label: const Text('Void Transaksi'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: C.red,
+                    side: const BorderSide(color: C.redBorder, width: 1.3),
+                  ),
+                ),
+              ),
+            ],
+          ]),
         ),
       ]),
     );
